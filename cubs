@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+
+import crypt
+import os
+import argparse 
+import random 
+import string 
+
+def real_root():
+    """ Finds the real root filesystem for getting back to it """
+    real_root = os.open('/', os.O_RDONLY)
+    return real_root
+
+def salt_generator():
+    """Generates a random string for crypt() to get the password right"""
+    letters = string.ascii_letters
+    random_salt = ''.join(random.choice(letters) for i in range(32))
+    return random_salt
+
+def disk_management(install_args):
+    """This method is responsible for pretty much every major process in the installation"""
+    
+    os.system(f'mkfs.ext4 {install_args.root}')
+    print(f"Created filesystem on {install_args.root}")
+    os.system(f'mount {install_args.root} /mnt')
+    print("Just mounted the root folder")
+    os.system('rsync -a -P /run/live/rootfs/filesystem.squashfs/* --exclude=debootstrap /mnt')
+    print("Just moved everything to the destination folder.")
+
+    if install_args.home:
+        os.system(f'mkfs.ext4 {install_args.home}')
+        print(f"Created filesystem on {install_args.home}")
+        os.system(f'mount {install_args.home} /mnt/home')
+        print("Home is mounted. Now you can add users")
+
+    os.system('genfstab /mnt > /mnt/etc/fstab')
+    print("Filesystem Table has successfully written.")
+
+    if install_args.swap:
+        os.system(f'mkswap {install_args.swap}')
+        os.system(f'echo "{install_args.swap}       none        swap        sw      0   0" >> /mnt/etc/fstab')
+        print(f"Swap created on {install_args.swap} and added to /etc/fstab.")
+
+def fs_preparation(): 
+    """Prepares the filesystems for installing bootloader and networking stuff."""
+    os.system('mount --bind /dev /mnt/dev')
+    os.system('mount --bind /proc /mnt/proc')
+    os.system('mount --bind /sys /mnt/sys')
+    print("/dev, /proc and /sys mounted.")
+
+def grub_install(boot_disk):
+    """ Installs GRUB for i386-pc platform. UEFI to be done! """ 
+    real_rootfs = real_root()
+    os.chdir('/mnt')
+    os.chroot('/mnt')
+    os.system(f'grub-install --target=i386-pc {boot_disk}')
+    os.system('grub-mkconfig > /boot/grub/grub.cfg')
+    print("Everything is done successfully")
+    os.fchdir(real_rootfs)
+    os.chroot('.')
+    os.system('umount -R /mnt')
+    print("Unmounted the filesystems!")
+
+def create_user(user_username, user_password):
+    """Creates the user on the destination machine"""
+    real_rootfs = real_root()
+    salt = salt_generator()
+    user_password = crypt.crypt(user_password, salt=salt)
+    os.chdir('/mnt')
+    os.chroot('/mnt')
+    print("root successfully changed!")
+    os.system(f'useradd -m -s /bin/bash -G sudo -k /etc/skel -p {user_password} {user_username}')
+    os.fchdir(real_rootfs)
+    os.chroot('.')
+    print("User account created successfully!")
+
+def timezone_setting(zone):
+    os.system('rm /mnt/etc/localtime')
+    os.system(f'ln -s /usr/share/zoneinfo/{zone} /mnt/etc/localtime')
+    print(f"Successfully set time zone to {zone}")
+
+
+if __name__ == '__main__':
+    print("Installation process started! Grab a cup of coffee and enjoy your installation of Caprice Enterprise Linux :-)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', required=True, help="Give the partition you want to serve as root as the input. This one is required.")
+    parser.add_argument('--home', help="Give the partition you want to serve as /home as the input.")
+    parser.add_argument('--swap', help="Give the partition you want to be the swap as the input.")
+    parser.add_argument('--bootloader', required=True, help="Give the hard drive you want to be the master boot record. Currently, CUBS only supports BIOS. UEFI will be handled in the later releases.")
+    parser.add_argument('--username', required=True,help="The username for administrator user. This is required")
+    parser.add_argument('--password', required=True, help="Password for the administrator. This one is also required")
+    parser.add_argument('--timezone', help="If you don't want UTC as the default timezone, you can use this option")
+    install_args = parser.parse_args()
+    disk_management(install_args)
+    fs_preparation()
+    create_user(install_args.username, install_args.password)
+    timezone_setting(install_args.timezone)
+    grub_install(install_args.bootloader)
+
